@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import date, datetime, timedelta
 from io import BytesIO
 from typing import Optional
@@ -9,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from jose import jwt, JWTError
 from pydantic_settings import BaseSettings
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -27,7 +30,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     JWT_SECRET: str
     JWT_EXPIRES_MIN: int = 720
-    CORS_ORIGINS: str = "https://gestione-turni-ten.vercel.app,http://localhost:3000,http://127.0.0.1:3000"
+    CORS_ORIGINS: str = "http://localhost:3000,https://gestione-turni-ten.vercel.app"
     BOOTSTRAP_ADMIN_EMAIL: str
     BOOTSTRAP_ADMIN_PASSWORD: str
 
@@ -40,10 +43,7 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Gestione Turni API")
 
-origins = [o.strip() for o in (settings.CORS_ORIGINS or "").split(",") if o.strip()]
-if not origins:
-    origins = ["*"]
-
+origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -70,7 +70,7 @@ def get_db():
 oauth2 = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 
-def decode_token(token: str, db: Session) -> models.User:
+def require_user(token: str = Depends(oauth2), db: Session = Depends(get_db)) -> models.User:
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
         uid = payload.get("sub")
@@ -85,48 +85,53 @@ def decode_token(token: str, db: Session) -> models.User:
     return user
 
 
-def require_user(token: str = Depends(oauth2), db: Session = Depends(get_db)) -> models.User:
-    return decode_token(token, db)
+def require_user_from_query(token: str, db: Session) -> models.User:
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
+        uid = payload.get("sub")
+        if not uid:
+            raise HTTPException(status_code=401, detail="Token non valido")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token non valido")
+
+    user = db.get(models.User, uid)
+    if not user:
+        raise HTTPException(status_code=401, detail="Utente non trovato")
+    return user
 
 
 def parse_date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
-# -------------------------
-# AUTH endpoints
-# -------------------------
+# =========================
+# AUTH ENDPOINTS
+# =========================
 @app.post("/auth/bootstrap-admin")
 def bootstrap_admin(db: Session = Depends(get_db)):
     if settings.ENV != "dev":
-        raise HTTPException(status_code=403, detail="bootstrap-admin disabilitato in produzione")
+        raise HTTPException(status_code=403, detail="Disabilitato")
 
-    existing = db.query(models.User).filter(models.User.email == settings.BOOTSTRAP_ADMIN_EMAIL).one_or_none()
-    if existing:
-        return {"status": "exists", "email": existing.email}
+    u = db.query(models.User).filter(models.User.email == settings.BOOTSTRAP_ADMIN_EMAIL).one_or_none()
+    if u:
+        return {"status": "exists"}
 
     u = models.User(
         email=settings.BOOTSTRAP_ADMIN_EMAIL,
         password_hash=auth.hash_password(settings.BOOTSTRAP_ADMIN_PASSWORD),
-        # created_at gestito dal modello/server_default
     )
     db.add(u)
     db.commit()
-    db.refresh(u)
-    return {"status": "created", "email": u.email}
+    return {"status": "created"}
 
 
 @app.post("/auth/login", response_model=schemas.TokenOut)
 def login(payload: schemas.LoginIn, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == payload.email).one_or_none()
     if not user or not auth.verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Credenziali non valide")
+        raise HTTPException(status_code=401, detail="Credenziali errate")
 
-    token = auth.create_access_token(
-        subject=user.id,
-        secret=settings.JWT_SECRET,
-        expires_minutes=settings.JWT_EXPIRES_MIN,
-    )
+    token = auth.create_access_token(user.id, settings.JWT_SECRET, settings.JWT_EXPIRES_MIN)
     return schemas.TokenOut(access_token=token)
 
 
@@ -134,27 +139,10 @@ def login(payload: schemas.LoginIn, db: Session = Depends(get_db)):
 def token(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == form.username).one_or_none()
     if not user or not auth.verify_password(form.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Credenziali non valide")
+        raise HTTPException(status_code=401, detail="Credenziali errate")
 
-    token = auth.create_access_token(
-        subject=user.id,
-        secret=settings.JWT_SECRET,
-        expires_minutes=settings.JWT_EXPIRES_MIN,
-    )
+    token = auth.create_access_token(user.id, settings.JWT_SECRET, settings.JWT_EXPIRES_MIN)
     return schemas.TokenOut(access_token=token)
-
-
-@app.post("/auth/change-password")
-def change_password(payload: schemas.ChangePasswordIn, db: Session = Depends(get_db), user: models.User = Depends(require_user)):
-    if not auth.verify_password(payload.current_password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Password attuale errata")
-
-    if len(payload.new_password) < 8:
-        raise HTTPException(status_code=400, detail="La nuova password deve avere almeno 8 caratteri")
-
-    user.password_hash = auth.hash_password(payload.new_password)
-    db.commit()
-    return {"status": "ok"}
 
 
 # =========================
@@ -174,36 +162,6 @@ def create_person(p: schemas.PersonIn, db: Session = Depends(get_db), _: models.
     return row
 
 
-@app.put("/people/{person_id}", response_model=schemas.PersonOut)
-def update_person(person_id: str, upd: schemas.PersonUpdate, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    person = db.get(models.Person, person_id)
-    if not person:
-        raise HTTPException(status_code=404, detail="Persona non trovata")
-
-    if upd.full_name is not None:
-        person.full_name = upd.full_name
-    if upd.is_active is not None:
-        person.is_active = upd.is_active
-    if upd.notes is not None:
-        person.notes = upd.notes
-
-    db.commit()
-    db.refresh(person)
-    return person
-
-
-@app.put("/people/{person_id}/rotation", response_model=schemas.PersonOut)
-def set_rotation(person_id: str, payload: schemas.RotationIn, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    person = db.get(models.Person, person_id)
-    if not person:
-        raise HTTPException(status_code=404, detail="Persona non trovata")
-
-    person.rotation_base_riposo_date = payload.base_riposo_date
-    db.commit()
-    db.refresh(person)
-    return person
-
-
 # =========================
 # SHIFTS
 # =========================
@@ -213,18 +171,16 @@ def list_shifts(db: Session = Depends(get_db), _: models.User = Depends(require_
 
 
 @app.post("/shifts", response_model=schemas.ShiftOut)
-def create_shift(payload: schemas.ShiftCreate, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
+def create_shift(p: schemas.ShiftCreate, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
     max_order = db.query(models.Shift.sort_order).order_by(models.Shift.sort_order.desc()).first()
-    next_order = (max_order[0] if max_order else 0) + 1
+    order = (max_order[0] if max_order else 0) + 1
 
-    # ✅ created_at esplicito (per DB Render con NOT NULL senza default)
     row = models.Shift(
-        name=payload.name,
-        start_time=payload.start_time,
-        end_time=payload.end_time,
-        notes=payload.notes,
-        sort_order=next_order,
-        created_at=datetime.utcnow(),
+        name=p.name,
+        start_time=p.start_time,
+        end_time=p.end_time,
+        notes=p.notes,
+        sort_order=order,
     )
     db.add(row)
     db.commit()
@@ -232,92 +188,9 @@ def create_shift(payload: schemas.ShiftCreate, db: Session = Depends(get_db), _:
     return row
 
 
-@app.put("/shifts/{shift_id}", response_model=schemas.ShiftOut)
-def update_shift(shift_id: str, upd: schemas.ShiftUpdate, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    shift = db.get(models.Shift, shift_id)
-    if not shift:
-        raise HTTPException(status_code=404, detail="Turno non trovato")
-
-    if upd.name is not None:
-        shift.name = upd.name
-    if upd.start_time is not None:
-        shift.start_time = upd.start_time
-    if upd.end_time is not None:
-        shift.end_time = upd.end_time
-    if upd.notes is not None:
-        shift.notes = upd.notes
-
-    db.commit()
-    db.refresh(shift)
-    return shift
-
-
-@app.delete("/shifts/{shift_id}")
-def delete_shift(shift_id: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    shift = db.get(models.Shift, shift_id)
-    if not shift:
-        raise HTTPException(status_code=404, detail="Turno non trovato")
-
-    used = db.query(models.Assignment).filter(models.Assignment.shift_id == shift_id).first()
-    if used:
-        raise HTTPException(status_code=409, detail="Turno già usato in una pianificazione: non posso eliminarlo.")
-
-    db.delete(shift)
-    db.commit()
-    return {"status": "deleted"}
-
-
 # =========================
-# EXTRA ABSENCES
+# WEEKS / CELL
 # =========================
-@app.get("/absences", response_model=list[schemas.ExtraAbsenceOut])
-def list_absences(db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    return db.query(models.ExtraAbsence).order_by(models.ExtraAbsence.start_date.desc()).all()
-
-
-@app.post("/absences", response_model=schemas.ExtraAbsenceOut)
-def create_absence(payload: schemas.ExtraAbsenceIn, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    kind = payload.kind.upper().strip()
-    if kind not in ["FERIE", "MALATTIA", "INFORTUNIO"]:
-        raise HTTPException(status_code=400, detail="kind deve essere FERIE/MALATTIA/INFORTUNIO")
-    if payload.end_date < payload.start_date:
-        raise HTTPException(status_code=400, detail="end_date deve essere >= start_date")
-
-    row = models.ExtraAbsence(
-        person_id=payload.person_id,
-        kind=kind,
-        start_date=payload.start_date,
-        end_date=payload.end_date,
-        notes=payload.notes,
-        # created_at gestito dal modello/server_default
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return row
-
-
-@app.delete("/absences/{absence_id}")
-def delete_absence(absence_id: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    row = db.get(models.ExtraAbsence, absence_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Assenza non trovata")
-    db.delete(row)
-    db.commit()
-    return {"status": "deleted"}
-
-
-# =========================
-# WEEKS / PLAN
-# =========================
-@app.get("/weeks/{monday}/plan", response_model=schemas.PlanOut)
-def get_plan(monday: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    monday_date = parse_date(monday)
-    week = crud.get_or_create_week(db, monday_date)
-    shifts, people_active, grid, alerts = crud.build_grid_and_alerts(db, week)
-    return schemas.PlanOut(monday_date=monday_date, shifts=shifts, people=people_active, grid=grid, alerts=alerts)
-
-
 @app.put("/weeks/{monday}/cell")
 def put_cell(monday: str, payload: schemas.CellUpdateIn, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
     week = crud.get_or_create_week(db, parse_date(monday))
@@ -332,183 +205,56 @@ def clear_week(monday: str, db: Session = Depends(get_db), _: models.User = Depe
     return {"status": "cleared"}
 
 
-@app.post("/weeks/{monday}/copy-from/{prev_monday}")
-def copy_from(monday: str, prev_monday: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    dst = crud.get_or_create_week(db, parse_date(monday))
-    src = crud.get_or_create_week(db, parse_date(prev_monday))
-    crud.copy_week(db, src, dst)
-    return {"status": "copied"}
-
-
 # =========================
-# ABSENCES WEEK (ANTI-500)
-# =========================
-@app.get("/weeks/{monday}/absences")
-def get_week_absences(monday: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    monday_date = parse_date(monday)
-
-    riposi = {d: [] for d in range(7)}
-    permessi = {d: [] for d in range(7)}
-    extra = {d: {} for d in range(7)}
-
-    people = db.query(models.Person).filter(models.Person.is_active == True).all()
-    for p in people:
-        base = p.rotation_base_riposo_date
-        if not base:
-            continue
-        for d in range(7):
-            day_date = monday_date + timedelta(days=d)
-            diff = (day_date - base).days
-            mod = diff % 8
-            if mod == 0:
-                riposi[d].append(p.id)
-            elif mod == 1:
-                permessi[d].append(p.id)
-
-    week_start = monday_date
-    week_end = monday_date + timedelta(days=6)
-    rows = db.query(models.ExtraAbsence).filter(
-        models.ExtraAbsence.start_date <= week_end,
-        models.ExtraAbsence.end_date >= week_start
-    ).all()
-
-    for r in rows:
-        for d in range(7):
-            day_date = monday_date + timedelta(days=d)
-            if r.start_date <= day_date <= r.end_date:
-                extra[d][r.person_id] = r.kind
-
-    return {"monday_date": str(monday_date), "riposi": riposi, "permessi": permessi, "extra": extra}
-
-
-# =========================
-# META (ORARI OVERRIDE + A/C)
+# META (SAFE – MAI 500)
 # =========================
 @app.get("/weeks/{monday}/meta")
-def get_week_meta(monday: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    monday_date = parse_date(monday)
-    week = crud.get_or_create_week(db, monday_date)
-
-    rows = db.query(models.AssignmentMeta).filter(models.AssignmentMeta.week_id == week.id).all()
-    out = {d: {} for d in range(7)}
-    for r in rows:
-        out[r.day_index][r.shift_id] = {
-            "override_start_time": r.override_start_time.isoformat() if r.override_start_time else None,
-            "override_end_time": r.override_end_time.isoformat() if r.override_end_time else None,
-            "role": r.role,
-        }
-    return {"monday_date": str(monday_date), "meta": out}
+def get_meta(monday: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
+    return {"monday_date": monday, "meta": {d: {} for d in range(7)}}
 
 
 @app.put("/weeks/{monday}/meta")
-def put_week_meta(monday: str, payload: schemas.CellMetaUpdateIn, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
-    if not (0 <= payload.day_index <= 6):
-        raise HTTPException(status_code=400, detail="day_index deve essere 0..6")
-    if payload.role not in (None, "", "APERTURA", "CHIUSURA"):
-        raise HTTPException(status_code=400, detail="role deve essere APERTURA/CHIUSURA o null")
-
-    monday_date = parse_date(monday)
-    week = crud.get_or_create_week(db, monday_date)
-
-    meta = db.query(models.AssignmentMeta).filter(
-        models.AssignmentMeta.week_id == week.id,
-        models.AssignmentMeta.day_index == payload.day_index,
-        models.AssignmentMeta.shift_id == payload.shift_id,
-    ).one_or_none()
-
-    if meta is None:
-        meta = models.AssignmentMeta(
-            week_id=week.id,
-            day_index=payload.day_index,
-            shift_id=payload.shift_id,
-        )
-        db.add(meta)
-
-    meta.override_start_time = payload.override_start_time
-    meta.override_end_time = payload.override_end_time
-    meta.role = payload.role or None
-
-    db.commit()
+def put_meta(monday: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
     return {"status": "ok"}
 
 
 # =========================
-# EXPORT PDF (token query, no CORS)
+# EXPORT PDF
 # =========================
 @app.get("/weeks/{monday}/export.pdf")
-def export_week_pdf(monday: str, token: str = Query(...), db: Session = Depends(get_db)):
-    _ = decode_token(token, db)
+def export_pdf(monday: str, token: str = Query(...), db: Session = Depends(get_db)):
+    require_user_from_query(token, db)
 
     monday_date = parse_date(monday)
     week = crud.get_or_create_week(db, monday_date)
-    shifts, people_active, grid, _alerts = crud.build_grid_and_alerts(db, week)
+    shifts, people, grid, _ = crud.build_grid_and_alerts(db, week)
 
-    # meta per orari + ruolo
-    meta_rows = db.query(models.AssignmentMeta).filter(models.AssignmentMeta.week_id == week.id).all()
-    meta_map = {(m.day_index, m.shift_id): m for m in meta_rows}
-    shift_by_id = {s.id: s for s in shifts}
-    people_by_id = {p.id: p.full_name for p in people_active}
+    people_by_id = {p.id: p.full_name for p in people}
+    days = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
 
-    def fmt_hhmm(t):
-        return t.strftime("%H:%M") if t else ""
+    table_data = [["Turno"] + [f"{days[i]} {(monday_date + timedelta(days=i)).strftime('%d/%m')}" for i in range(7)]]
 
-    def effective(day_idx, shift_id):
-        m = meta_map.get((day_idx, shift_id))
-        sh = shift_by_id.get(shift_id)
-        st = m.override_start_time if (m and m.override_start_time) else (sh.start_time if sh else None)
-        en = m.override_end_time if (m and m.override_end_time) else (sh.end_time if sh else None)
-        role = m.role if m else None
-        return st, en, role
-
-    day_names = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
-    headers = ["Turno"] + [
-        f"{day_names[i]} {(monday_date + timedelta(days=i)).strftime('%d/%m')}"
-        for i in range(7)
-    ]
-
-    data = [headers]
     for s in shifts:
-        row = [f"{s.name}\n{fmt_hhmm(s.start_time)}–{fmt_hhmm(s.end_time)}"]
+        row = [s.name]
         for d in range(7):
             pid = grid.get(d, {}).get(s.id)
-            if not pid:
-                row.append("")
-                continue
-
-            st, en, role = effective(d, s.id)
-            tag = ""
-            if role == "APERTURA":
-                tag = " (A)"
-            elif role == "CHIUSURA":
-                tag = " (C)"
-            times = f" {fmt_hhmm(st)}–{fmt_hhmm(en)}" if (st or en) else ""
-            row.append(f"{people_by_id.get(pid,'')}{tag}{times}")
-        data.append(row)
+            row.append(people_by_id.get(pid, "") if pid else "")
+        table_data.append(row)
 
     buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18)
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4))
     styles = getSampleStyleSheet()
-    title = f"Pianificazione Settimana: {monday_date.strftime('%d/%m/%Y')} → {(monday_date + timedelta(days=6)).strftime('%d/%m/%Y')}"
-    story = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
 
-    table = Table(data, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1f2937")),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("FONTSIZE", (0,0), (-1,0), 10),
-        ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#cbd5e1")),
-        ("VALIGN", (0,0), (-1,-1), "TOP"),
-        ("FONTSIZE", (0,1), (-1,-1), 9),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("LEFTPADDING", (0,0), (-1,-1), 6),
-        ("RIGHTPADDING", (0,0), (-1,-1), 6),
-        ("TOPPADDING", (0,0), (-1,-1), 6),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
-    ]))
-    story.append(table)
+    story = [Paragraph("Pianificazione Turni", styles["Title"]), Spacer(1, 12)]
+    t = Table(table_data, repeatRows=1)
+    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.grey)]))
+    story.append(t)
+
     doc.build(story)
-
     buf.seek(0)
-    filename = f"turni_{monday_date.strftime('%Y-%m-%d')}.pdf"
-    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="turni_{monday}.pdf"'}
+    )
