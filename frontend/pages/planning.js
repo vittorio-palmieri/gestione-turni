@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Layout from "../components/Layout";
 import RequireAuth from "../components/RequireAuth";
-import { apiFetch } from "../lib/api";
+import { apiFetch, getToken } from "../lib/api";
 
 function mondayOf(d = new Date()) {
   const x = new Date(d);
@@ -118,6 +118,31 @@ export default function Planning() {
     await apiFetch(`/weeks/${mondayISO}/clear`, { method: "POST" });
     await loadAll();
   }
+  async function exportPdf() {
+  try {
+    const token = getToken();
+    const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
+    const url = `${apiBase}/weeks/${mondayISO}/export.pdf`;
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!res.ok) {
+      throw new Error(`Errore export PDF (${res.status})`);
+    }
+
+    const blob = await res.blob();
+    const link = document.createElement("a");
+    link.href = window.URL.createObjectURL(blob);
+    link.download = `turni_${mondayISO}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } catch (e) {
+    setErr(e.message);
+  }
+}
 
   // Anomalie leggibili (per lista sotto)
   const readableAlerts = useMemo(() => {
@@ -192,11 +217,16 @@ export default function Planning() {
           <button className="btn" onClick={() => setMonday(addDays(monday, 7))}>→</button>
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-          <button className="btn" onClick={loadAll}>🔄 Refresh</button>
-          <button className="btn primary" onClick={() => alert("💾 Salvataggio automatico attivo")}>💾 Salva (auto)</button>
-          <button className="btn danger" onClick={resetWeek}>♻️ Reset settimana</button>
-        </div>
+<div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+  <button className="btn" onClick={loadAll}>🔄 Refresh</button>
+  <button className="btn primary" onClick={() => alert("💾 Salvataggio automatico attivo")}>
+    💾 Salva (auto)
+  </button>
+  <button className="btn danger" onClick={resetWeek}>♻️ Reset settimana</button>
+
+  {/* ⬇️ QUESTO È IL NUOVO */}
+  <button className="btn secondary" onClick={exportPdf}>📄 Esporta PDF</button>
+</div>
 
         {err && <div className="card alert">{err}</div>}
 
