@@ -130,6 +130,24 @@ def token(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     return schemas.TokenOut(access_token=token)
 
 
+# ✅ CHANGE PASSWORD (NUOVO)
+# Nota: serve anche lo schema in schemas.py:
+# class ChangePasswordIn(BaseModel):
+#     current_password: str
+#     new_password: str
+@app.post("/auth/change-password")
+def change_password(payload: schemas.ChangePasswordIn, db: Session = Depends(get_db), user: models.User = Depends(require_user)):
+    if not auth.verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Password attuale errata")
+
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=400, detail="La nuova password deve avere almeno 8 caratteri")
+
+    user.password_hash = auth.hash_password(payload.new_password)
+    db.commit()
+    return {"status": "ok"}
+
+
 # =========================
 # PEOPLE
 # =========================
