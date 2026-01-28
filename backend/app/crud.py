@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from datetime import date, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
@@ -26,6 +27,14 @@ def set_cell(db: Session, week: models.Week, day_index: int, shift_id: str, pers
         )
     ).one_or_none()
 
+    # ✅ Se svuoti la cella (person_id None) => cancella la riga
+    if person_id is None:
+        if cell is not None:
+            db.delete(cell)
+            db.commit()
+        return
+
+    # ✅ Se assegni una persona
     if cell is None:
         db.add(models.Assignment(
             week_id=week.id,
@@ -57,6 +66,7 @@ def copy_week(db: Session, src_week: models.Week, dst_week: models.Week):
             person_id=c.person_id
         ))
 
+    # Copia anche i metadati (orari override + apertura/chiusura)
     src_meta = db.query(models.AssignmentMeta).filter(models.AssignmentMeta.week_id == src_week.id).all()
     for m in src_meta:
         db.add(models.AssignmentMeta(
@@ -71,7 +81,7 @@ def copy_week(db: Session, src_week: models.Week, dst_week: models.Week):
     db.commit()
 
 
-# -------- ROTAZIONE 8 GIORNI ----------
+# -------- ROTAZIONE 8 GIORNI (riposo/permesso) ----------
 def _rot_kind(person: models.Person, day_date: date) -> str | None:
     base = getattr(person, "rotation_base_riposo_date", None)
     if not base:
@@ -102,11 +112,12 @@ def build_grid_and_alerts(db: Session, week: models.Week):
     not_planned: dict[int, list[str]] = {d: [] for d in range(7)}
     riposo_saltato: dict[int, list] = {d: [] for d in range(7)}
     permesso_saltato: dict[int, list] = {d: [] for d in range(7)}
-    extra_absence_saltata: dict[int, list] = {d: [] for d in range(7)}
+    extra_absence_saltata: dict[int, list] = {d: [] for d in range(7)}  # FERIE/MALATTIA/INFORTUNIO pianificata
 
     active_ids = [p.id for p in people_active]
     shift_name_by_id = {s.id: s.name for s in shifts}
 
+    # extra absences nella settimana (bloccanti)
     week_start = monday_date
     week_end = monday_date + timedelta(days=6)
     extra_rows = db.query(models.ExtraAbsence).filter(
@@ -114,13 +125,14 @@ def build_grid_and_alerts(db: Session, week: models.Week):
         models.ExtraAbsence.end_date >= week_start
     ).all()
 
-    extra_by_day: dict[int, dict[str, str]] = {d: {} for d in range(7)}
+    extra_by_day: dict[int, dict[str, str]] = {d: {} for d in range(7)}  # day -> {person_id: kind}
     for r in extra_rows:
         for d in range(7):
             day_date = monday_date + timedelta(days=d)
             if r.start_date <= day_date <= r.end_date:
                 extra_by_day[d][r.person_id] = r.kind
 
+    # rotazione riposi/permessi per settimana
     rot_by_day: dict[int, dict[str, str]] = {d: {} for d in range(7)}
     for p in people_active:
         for d in range(7):
@@ -131,6 +143,7 @@ def build_grid_and_alerts(db: Session, week: models.Week):
     for d in range(7):
         assigned = [pid for pid in grid[d].values() if pid is not None]
 
+        # Doppioni
         counts: dict[str, int] = {}
         for pid in assigned:
             counts[pid] = counts.get(pid, 0) + 1
@@ -138,10 +151,12 @@ def build_grid_and_alerts(db: Session, week: models.Week):
             if cnt >= 2:
                 duplicates[d].append({"person_id": pid, "count": cnt})
 
+        # Riposo/permesso/extra saltati (pianificato durante assenza)
         for shift_id, pid in grid[d].items():
             if not pid:
                 continue
 
+            # extra blocca (ferie/malattia/infortunio)
             extra_kind = extra_by_day[d].get(pid)
             if extra_kind:
                 extra_absence_saltata[d].append({
@@ -152,6 +167,7 @@ def build_grid_and_alerts(db: Session, week: models.Week):
                 })
                 continue
 
+            # riposo/permesso (warning)
             rot_kind = rot_by_day[d].get(pid)
             if rot_kind == "RIPOSO":
                 riposo_saltato[d].append({
@@ -166,6 +182,7 @@ def build_grid_and_alerts(db: Session, week: models.Week):
                     "shift_name": shift_name_by_id.get(shift_id, "")
                 })
 
+        # Non pianificati: escludi chi è assente (rotazione o extra)
         assigned_set = set(assigned)
         not_planned[d] = [
             pid for pid in active_ids
