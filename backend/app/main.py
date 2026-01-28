@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from io import BytesIO
 from typing import Optional
 
@@ -55,7 +55,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-)
+
 
 
 # =========================
@@ -237,13 +237,16 @@ def create_shift(payload: schemas.ShiftCreate, db: Session = Depends(get_db), _:
     max_order = db.query(models.Shift.sort_order).order_by(models.Shift.sort_order.desc()).first()
     next_order = (max_order[0] if max_order else 0) + 1
 
+    # ✅ created_at valorizzato in modo esplicito (DB Render NOT NULL senza default)
     shift = models.Shift(
         name=payload.name,
         start_time=payload.start_time,
         end_time=payload.end_time,
         notes=payload.notes,
         sort_order=next_order,
+        created_at=datetime.utcnow(),  # <-- QUESTO RISOLVE IL 500
     )
+
     db.add(shift)
     db.commit()
     db.refresh(shift)
