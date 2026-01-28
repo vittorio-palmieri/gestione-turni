@@ -31,6 +31,8 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
 
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
 
 class Person(Base):
     __tablename__ = "people"
@@ -42,18 +44,22 @@ class Person(Base):
 
     rotation_base_riposo_date = Column(Date, nullable=True)
 
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
 
 class Shift(Base):
     __tablename__ = "shifts"
 
     id = Column(String, primary_key=True, default=gen_id)
-    name = Column(String, nullable=False)
 
+    name = Column(String, nullable=False)
     start_time = Column(Time, nullable=True)
     end_time = Column(Time, nullable=True)
-
     notes = Column(Text, nullable=True)
     sort_order = Column(Integer, default=0, nullable=False)
+
+    # ✅ fondamentale: compatibile con DB che ha created_at NOT NULL
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class Week(Base):
@@ -61,6 +67,8 @@ class Week(Base):
 
     id = Column(String, primary_key=True, default=gen_id)
     monday_date = Column(Date, unique=True, index=True, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class Assignment(Base):
@@ -72,17 +80,11 @@ class Assignment(Base):
     id = Column(String, primary_key=True, default=gen_id)
 
     week_id = Column(String, ForeignKey("weeks.id", ondelete="CASCADE"), nullable=False)
-    day_index = Column(Integer, nullable=False)  # 0..6
+    day_index = Column(Integer, nullable=False)
     shift_id = Column(String, ForeignKey("shifts.id", ondelete="CASCADE"), nullable=False)
     person_id = Column(String, ForeignKey("people.id", ondelete="SET NULL"), nullable=True)
 
-    # ✅ IMPORTANTISSIMO per evitare 500 su DB con NOT NULL senza default
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
     week = relationship("Week")
     shift = relationship("Shift")
@@ -103,7 +105,9 @@ class AssignmentMeta(Base):
 
     override_start_time = Column(Time, nullable=True)
     override_end_time = Column(Time, nullable=True)
-    role = Column(String, nullable=True)  # "APERTURA" | "CHIUSURA" | None
+    role = Column(String, nullable=True)  # APERTURA / CHIUSURA / None
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     week = relationship("Week")
     shift = relationship("Shift")
@@ -119,5 +123,7 @@ class ExtraAbsence(Base):
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
     notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     person = relationship("Person")
