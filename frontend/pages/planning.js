@@ -3,12 +3,9 @@ import Layout from "../components/Layout";
 import RequireAuth from "../components/RequireAuth";
 import { apiFetch } from "../lib/api";
 
-/* =======================
-   UTIL DATE
-======================= */
 function mondayOf(d = new Date()) {
   const x = new Date(d);
-  const day = (x.getDay() + 6) % 7;
+  const day = (x.getDay() + 6) % 7; // Lun=0
   x.setDate(x.getDate() - day);
   x.setHours(0, 0, 0, 0);
   return x;
@@ -22,11 +19,9 @@ const addDays = (d, n) => {
   x.setDate(x.getDate() + n);
   return x;
 };
+
 const days = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
 
-/* =======================
-   COMPONENT
-======================= */
 export default function Planning() {
   const [monday, setMonday] = useState(mondayOf());
   const mondayISO = useMemo(() => iso(monday), [monday]);
@@ -36,9 +31,6 @@ export default function Planning() {
   const [err, setErr] = useState(null);
   const [saving, setSaving] = useState(null);
 
-  /* =======================
-     LOAD DATA
-  ======================= */
   async function loadAll() {
     try {
       setErr(null);
@@ -55,25 +47,19 @@ export default function Planning() {
     loadAll();
   }, [mondayISO]);
 
-  /* =======================
-     MAP ID → NOME
-  ======================= */
+  // id -> nome
   const peopleById = useMemo(() => {
     const m = new Map();
     (plan?.people || []).forEach((p) => m.set(p.id, p.full_name));
     return m;
   }, [plan]);
-
   const nameOf = (id) => peopleById.get(id) || id;
 
-  /* =======================
-     ASSENZE / ROTAZIONI
-  ======================= */
-  // blocco (ferie/malattia/infortunio)
+  // extra blocco (ferie/malattia/infortunio)
   const extraOf = (pid, d) =>
     abs?.extra?.[d]?.[pid] || abs?.extra?.[String(d)]?.[pid] || null;
 
-  // riposi / permessi (warning)
+  // riposi/permessi (warning)
   const rotOf = (pid, d) => {
     const rip = abs?.riposi?.[d] || abs?.riposi?.[String(d)] || [];
     const per = abs?.permessi?.[d] || abs?.permessi?.[String(d)] || [];
@@ -82,9 +68,30 @@ export default function Planning() {
     return null;
   };
 
-  /* =======================
-     SET CELL
-  ======================= */
+  // alerts safe
+  const alerts = plan?.alerts || {
+    duplicates: {},
+    not_planned: {},
+    riposo_saltato: {},
+    permesso_saltato: {},
+    extra_absence_saltata: {},
+  };
+
+  // per-day duplicates set (per evidenziare bordi)
+  const dupMap = useMemo(() => {
+    const out = {};
+    const dups = alerts.duplicates || {};
+    for (const dayKey of Object.keys(dups)) {
+      const arr = dups[dayKey] || [];
+      out[Number(dayKey)] = new Set(arr.map((x) => x.person_id));
+    }
+    return out;
+  }, [alerts]);
+
+  // badge counts
+  const notPlannedCount = (d) => (alerts.not_planned?.[d] || alerts.not_planned?.[String(d)] || []).length;
+  const duplicatesCount = (d) => (alerts.duplicates?.[d] || alerts.duplicates?.[String(d)] || []).length;
+
   async function setCell(day, shift, person) {
     const block = person ? extraOf(person, day) : null;
     if (block) {
@@ -112,11 +119,9 @@ export default function Planning() {
     await loadAll();
   }
 
-  /* =======================
-     ANOMALIE LEGGIBILI
-  ======================= */
+  // Anomalie leggibili (per lista sotto)
   const readableAlerts = useMemo(() => {
-    const a = plan?.alerts || {};
+    const a = alerts || {};
     const out = {
       duplicates: [],
       not_planned: [],
@@ -176,23 +181,20 @@ export default function Planning() {
     });
 
     return out;
-  }, [plan, peopleById]);
+  }, [alerts, peopleById]);
 
-  /* =======================
-     RENDER
-  ======================= */
   return (
     <RequireAuth>
       <Layout>
-        <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "center" }}>
           <button className="btn" onClick={() => setMonday(addDays(monday, -7))}>←</button>
           <b>Settimana {mondayISO} → {iso(addDays(monday, 6))}</b>
           <button className="btn" onClick={() => setMonday(addDays(monday, 7))}>→</button>
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
           <button className="btn" onClick={loadAll}>🔄 Refresh</button>
-          <button className="btn primary">💾 Salva (auto)</button>
+          <button className="btn primary" onClick={() => alert("💾 Salvataggio automatico attivo")}>💾 Salva (auto)</button>
           <button className="btn danger" onClick={resetWeek}>♻️ Reset settimana</button>
         </div>
 
@@ -205,30 +207,79 @@ export default function Planning() {
             <table className="grid">
               <thead>
                 <tr>
-                  <th>Turno</th>
-                  {days.map((d, i) => (
-                    <th key={d}>{d} {iso(addDays(monday, i)).slice(5)}</th>
-                  ))}
+                  <th style={{ minWidth: 120 }}>Turno</th>
+                  {days.map((d, i) => {
+                    const di = i;
+                    const np = notPlannedCount(di);
+                    const du = duplicatesCount(di);
+                    return (
+                      <th key={d} style={{ minWidth: 190 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                          <div>
+                            {d} <span className="badge">{iso(addDays(monday, i)).slice(5)}</span>
+                          </div>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            {np > 0 && <span className="badge" title="Non pianificati">NP:{np}</span>}
+                            {du > 0 && <span className="badge" title="Doppioni">D:{du}</span>}
+                          </div>
+                        </div>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
+
               <tbody>
                 {plan.shifts.map((s) => (
                   <tr key={s.id}>
-                    <td><b>{s.name}</b></td>
+                    <td style={{ fontWeight: 800 }}>{s.name}</td>
+
                     {days.map((_, di) => {
-                      const row = plan.grid?.[di] || {};
+                      const row = plan.grid?.[di] || plan.grid?.[String(di)] || {};
                       const val = row?.[s.id] || "";
+
+                      const ex = val ? extraOf(val, di) : null; // blocco
+                      const rot = val ? rotOf(val, di) : null; // warning
+
+                      const isDup = val ? (dupMap?.[di]?.has(val) || false) : false;
+
+                      let bg = "transparent";
+                      if (ex) bg = "#fee2e2";        // rosso chiaro
+                      else if (rot) bg = "#fef3c7";  // giallo chiaro
+
+                      const cellStyle = {
+                        background: bg,
+                        border: isDup ? "2px solid #dc2626" : "1px solid #e2e8f0",
+                        borderRadius: 10,
+                        padding: 8,
+                      };
+
                       return (
                         <td key={di}>
-                          <select value={val} onChange={(e) => setCell(di, s.id, e.target.value)}>
-                            <option value="">—</option>
-                            {plan.people.filter(p => p.is_active).map((p) => (
-                              <option key={p.id} value={p.id} disabled={!!extraOf(p.id, di)}>
-                                {p.full_name}
-                                {extraOf(p.id, di) ? ` (${extraOf(p.id, di)})` : rotOf(p.id, di) ? ` (${rotOf(p.id, di)})` : ""}
-                              </option>
-                            ))}
-                          </select>
+                          <div style={cellStyle}>
+                            <select
+                              value={val}
+                              onChange={(e) => setCell(di, s.id, e.target.value)}
+                              disabled={saving === `${di}-${s.id}`}
+                            >
+                              <option value="">—</option>
+                              {plan.people.filter((p) => p.is_active).map((p) => {
+                                const blocked = !!extraOf(p.id, di);
+                                const r = rotOf(p.id, di);
+                                const exLabel = extraOf(p.id, di);
+                                return (
+                                  <option key={p.id} value={p.id} disabled={blocked}>
+                                    {p.full_name}
+                                    {exLabel ? ` (${exLabel})` : r ? ` (${r})` : ""}
+                                  </option>
+                                );
+                              })}
+                            </select>
+
+                            {ex && <div className="small" style={{ marginTop: 6 }}>⛔ {ex}</div>}
+                            {!ex && rot && <div className="small" style={{ marginTop: 6 }}>⚠ {rot}</div>}
+                            {isDup && <div className="small" style={{ marginTop: 6 }}>🔁 Doppione</div>}
+                          </div>
                         </td>
                       );
                     })}
@@ -239,8 +290,8 @@ export default function Planning() {
           </div>
         )}
 
-        <h3 style={{ marginTop: 20 }}>Anomalie</h3>
-
+        {/* Lista Anomalie leggibili */}
+        <h3 style={{ marginTop: 20 }}>Anomalie (dettaglio)</h3>
         <div className="card">
           <h4>⛔ Assenze bloccanti</h4>
           {readableAlerts.extra_absence_saltata.length === 0 ? "Nessuna" :
