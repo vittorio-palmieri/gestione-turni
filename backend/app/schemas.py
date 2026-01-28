@@ -116,7 +116,10 @@ class PlanOut(BaseModel):
     people: List[PersonOut]
     grid: Dict[int, Dict[str, Optional[str]]]
     alerts: Dict
-    from pydantic import BaseModel
-    class ChangePasswordIn(BaseModel):
+   
+   
+
+
+class ChangePasswordIn(BaseModel):
     current_password: str
     new_password: str
