@@ -46,8 +46,8 @@ if not origins:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=origins if origins else ["*"],
+    allow_credentials=False,  # ✅ con Bearer token è meglio così
     allow_methods=["*"],
     allow_headers=["*"],
 )
