@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from uuid import uuid4
-
 from sqlalchemy import (
     Column,
     String,
@@ -20,7 +19,7 @@ from sqlalchemy.orm import relationship
 from .db import Base
 
 
-def gen_id() -> str:
+def gen_id():
     return str(uuid4())
 
 
@@ -28,10 +27,9 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(String, primary_key=True, default=gen_id)
-    email = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=False)
-
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
 
 
 class Person(Base):
@@ -39,36 +37,32 @@ class Person(Base):
 
     id = Column(String, primary_key=True, default=gen_id)
     full_name = Column(String, nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)
-    notes = Column(Text, nullable=True)
-
-    rotation_base_riposo_date = Column(Date, nullable=True)
-
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    is_active = Column(Boolean, nullable=False, default=True)
+    notes = Column(Text)
+    rotation_base_riposo_date = Column(Date)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
 
 
 class Shift(Base):
     __tablename__ = "shifts"
 
     id = Column(String, primary_key=True, default=gen_id)
-
     name = Column(String, nullable=False)
-    start_time = Column(Time, nullable=True)
-    end_time = Column(Time, nullable=True)
-    notes = Column(Text, nullable=True)
-    sort_order = Column(Integer, default=0, nullable=False)
+    start_time = Column(Time)
+    end_time = Column(Time)
+    notes = Column(Text)
+    sort_order = Column(Integer, nullable=False, default=0)
 
-    # ✅ fondamentale: compatibile con DB che ha created_at NOT NULL
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    # ✅ FIX CRITICO
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
 
 
 class Week(Base):
     __tablename__ = "weeks"
 
     id = Column(String, primary_key=True, default=gen_id)
-    monday_date = Column(Date, unique=True, index=True, nullable=False)
-
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    monday_date = Column(Date, nullable=False, unique=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
 
 
 class Assignment(Base):
@@ -78,52 +72,27 @@ class Assignment(Base):
     )
 
     id = Column(String, primary_key=True, default=gen_id)
-
-    week_id = Column(String, ForeignKey("weeks.id", ondelete="CASCADE"), nullable=False)
+    week_id = Column(String, ForeignKey("weeks.id"), nullable=False)
     day_index = Column(Integer, nullable=False)
-    shift_id = Column(String, ForeignKey("shifts.id", ondelete="CASCADE"), nullable=False)
-    person_id = Column(String, ForeignKey("people.id", ondelete="SET NULL"), nullable=True)
+    shift_id = Column(String, ForeignKey("shifts.id"), nullable=False)
+    person_id = Column(String, ForeignKey("people.id"), nullable=True)
 
-    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 
     week = relationship("Week")
     shift = relationship("Shift")
     person = relationship("Person")
 
 
-class AssignmentMeta(Base):
-    __tablename__ = "assignment_meta"
-    __table_args__ = (
-        UniqueConstraint("week_id", "day_index", "shift_id", name="uq_assignment_meta_cell"),
-    )
-
-    id = Column(String, primary_key=True, default=gen_id)
-
-    week_id = Column(String, ForeignKey("weeks.id", ondelete="CASCADE"), nullable=False)
-    day_index = Column(Integer, nullable=False)
-    shift_id = Column(String, ForeignKey("shifts.id", ondelete="CASCADE"), nullable=False)
-
-    override_start_time = Column(Time, nullable=True)
-    override_end_time = Column(Time, nullable=True)
-    role = Column(String, nullable=True)  # APERTURA / CHIUSURA / None
-
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-    week = relationship("Week")
-    shift = relationship("Shift")
-
-
 class ExtraAbsence(Base):
     __tablename__ = "extra_absences"
 
     id = Column(String, primary_key=True, default=gen_id)
-
-    person_id = Column(String, ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
-    kind = Column(String, nullable=False)  # FERIE / MALATTIA / INFORTUNIO
+    person_id = Column(String, ForeignKey("people.id"), nullable=False)
+    kind = Column(String, nullable=False)
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
-    notes = Column(Text, nullable=True)
-
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    notes = Column(Text)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
 
     person = relationship("Person")
