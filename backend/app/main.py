@@ -46,10 +46,15 @@ if not origins:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if origins else ["*"],
-    allow_credentials=False,  # ✅ con Bearer token è meglio così
+    allow_origins=[
+        "https://gestione-turni-ten.vercel.app",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
 )
 
 
