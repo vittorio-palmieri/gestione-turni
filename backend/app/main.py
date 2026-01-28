@@ -1,10 +1,18 @@
 from datetime import date, datetime, timedelta
+from io import BytesIO
+
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.responses import StreamingResponse
 from jose import jwt, JWTError
 from pydantic_settings import BaseSettings
 from sqlalchemy.orm import Session
+
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
 
 from . import models, schemas, auth, seed, crud
 from .db import make_engine, make_session_local, Base
@@ -76,6 +84,21 @@ def require_user(token: str = Depends(oauth2), db: Session = Depends(get_db)) ->
     return user
 
 
+def require_user_from_query(token: str, db: Session) -> models.User:
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
+        uid = payload.get("sub")
+        if not uid:
+            raise HTTPException(status_code=401, detail="Token non valido")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token non valido")
+
+    user = db.get(models.User, uid)
+    if not user:
+        raise HTTPException(status_code=401, detail="Utente non trovato")
+    return user
+
+
 def parse_date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
@@ -130,11 +153,6 @@ def token(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     return schemas.TokenOut(access_token=token)
 
 
-# ✅ CHANGE PASSWORD (NUOVO)
-# Nota: serve anche lo schema in schemas.py:
-# class ChangePasswordIn(BaseModel):
-#     current_password: str
-#     new_password: str
 @app.post("/auth/change-password")
 def change_password(payload: schemas.ChangePasswordIn, db: Session = Depends(get_db), user: models.User = Depends(require_user)):
     if not auth.verify_password(payload.current_password, user.password_hash):
@@ -318,7 +336,6 @@ def get_plan(monday: str, db: Session = Depends(get_db), _: models.User = Depend
     week = crud.get_or_create_week(db, monday_date)
     shifts, people_active, grid, alerts = crud.build_grid_and_alerts(db, week)
 
-    # ✅ anti-crash: struttura sempre completa
     for d in range(7):
         grid.setdefault(d, {})
     alerts.setdefault("duplicates", {d: [] for d in range(7)})
@@ -364,12 +381,10 @@ def copy_from(monday: str, prev_monday: str, db: Session = Depends(get_db), _: m
 def get_absences(monday: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
     monday_date = parse_date(monday)
 
-    # sempre strutture complete
     riposi = {d: [] for d in range(7)}
     permessi = {d: [] for d in range(7)}
     extra = {d: {} for d in range(7)}
 
-    # riposi/permessi calcolati via rotazione (se già implementati altrove li rimetterai)
     people = db.query(models.Person).filter(models.Person.is_active == True).all()
     for p in people:
         if not p.rotation_base_riposo_date:
@@ -383,7 +398,6 @@ def get_absences(monday: str, db: Session = Depends(get_db), _: models.User = De
             elif mod == 1:
                 permessi[d].append(p.id)
 
-    # extra (ferie/malattia/infortunio)
     week_start = monday_date
     week_end = monday_date + timedelta(days=6)
     rows = db.query(models.ExtraAbsence).filter(
@@ -398,44 +412,39 @@ def get_absences(monday: str, db: Session = Depends(get_db), _: models.User = De
                 extra[d][r.person_id] = r.kind
 
     return {"monday_date": str(monday_date), "riposi": riposi, "permessi": permessi, "extra": extra}
-    from io import BytesIO
-from fastapi.responses import StreamingResponse
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib import colors
 
+
+# =========================
+# EXPORT PDF (token via query -> no CORS)
+# =========================
 @app.get("/weeks/{monday}/export.pdf")
-def export_week_pdf(monday: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
+def export_week_pdf(
+    monday: str,
+    token: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    _user = require_user_from_query(token, db)  # valida token
+
     monday_date = parse_date(monday)
-
-    # prendo planning
     week = crud.get_or_create_week(db, monday_date)
-    shifts, people_active, grid, alerts = crud.build_grid_and_alerts(db, week)
+    shifts, people_active, grid, _alerts = crud.build_grid_and_alerts(db, week)
 
-    # mappa id->nome
     people_by_id = {p.id: p.full_name for p in people_active}
 
-    # prepara intestazioni (Lun..Dom + date)
     day_names = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
     headers = ["Turno"] + [
-        f"{day_names[i]} { (monday_date + timedelta(days=i)).strftime('%d/%m') }"
+        f"{day_names[i]} {(monday_date + timedelta(days=i)).strftime('%d/%m')}"
         for i in range(7)
     ]
 
-    # tabella: una riga per turno
     data = [headers]
     for s in shifts:
         row = [s.name]
         for d in range(7):
-            pid = None
-            if d in grid and s.id in grid[d]:
-                pid = grid[d][s.id]
-            name = people_by_id.get(pid, "") if pid else ""
-            row.append(name)
+            pid = grid.get(d, {}).get(s.id)
+            row.append(people_by_id.get(pid, "") if pid else "")
         data.append(row)
 
-    # PDF in memoria
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -448,11 +457,13 @@ def export_week_pdf(monday: str, db: Session = Depends(get_db), _: models.User =
     )
 
     styles = getSampleStyleSheet()
-    title = f"Pianificazione Settimana: {monday_date.strftime('%d/%m/%Y')} → {(monday_date + timedelta(days=6)).strftime('%d/%m/%Y')}"
+    title = (
+        f"Pianificazione Settimana: {monday_date.strftime('%d/%m/%Y')} → "
+        f"{(monday_date + timedelta(days=6)).strftime('%d/%m/%Y')}"
+    )
     story = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
 
     table = Table(data, repeatRows=1)
-
     table.setStyle(TableStyle([
         ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1f2937")),
         ("TEXTCOLOR", (0,0), (-1,0), colors.white),
@@ -481,5 +492,5 @@ def export_week_pdf(monday: str, db: Session = Depends(get_db), _: models.User =
     return StreamingResponse(
         buf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'}
     )

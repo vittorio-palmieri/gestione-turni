@@ -89,8 +89,10 @@ export default function Planning() {
   }, [alerts]);
 
   // badge counts
-  const notPlannedCount = (d) => (alerts.not_planned?.[d] || alerts.not_planned?.[String(d)] || []).length;
-  const duplicatesCount = (d) => (alerts.duplicates?.[d] || alerts.duplicates?.[String(d)] || []).length;
+  const notPlannedCount = (d) =>
+    (alerts.not_planned?.[d] || alerts.not_planned?.[String(d)] || []).length;
+  const duplicatesCount = (d) =>
+    (alerts.duplicates?.[d] || alerts.duplicates?.[String(d)] || []).length;
 
   async function setCell(day, shift, person) {
     const block = person ? extraOf(person, day) : null;
@@ -118,31 +120,18 @@ export default function Planning() {
     await apiFetch(`/weeks/${mondayISO}/clear`, { method: "POST" });
     await loadAll();
   }
-  async function exportPdf() {
-  try {
-    const token = getToken();
-    const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
-    const url = `${apiBase}/weeks/${mondayISO}/export.pdf`;
 
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (!res.ok) {
-      throw new Error(`Errore export PDF (${res.status})`);
+  // ✅ Export PDF (NO fetch -> NO CORS)
+  function exportPdf() {
+    try {
+      const token = getToken();
+      const base = process.env.NEXT_PUBLIC_API_BASE_URL;
+      const url = `${base}/weeks/${mondayISO}/export.pdf?token=${encodeURIComponent(token)}`;
+      window.open(url, "_blank");
+    } catch (e) {
+      setErr(e.message);
     }
-
-    const blob = await res.blob();
-    const link = document.createElement("a");
-    link.href = window.URL.createObjectURL(blob);
-    link.download = `turni_${mondayISO}.pdf`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-  } catch (e) {
-    setErr(e.message);
   }
-}
 
   // Anomalie leggibili (per lista sotto)
   const readableAlerts = useMemo(() => {
@@ -217,16 +206,17 @@ export default function Planning() {
           <button className="btn" onClick={() => setMonday(addDays(monday, 7))}>→</button>
         </div>
 
-<div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-  <button className="btn" onClick={loadAll}>🔄 Refresh</button>
-  <button className="btn primary" onClick={() => alert("💾 Salvataggio automatico attivo")}>
-    💾 Salva (auto)
-  </button>
-  <button className="btn danger" onClick={resetWeek}>♻️ Reset settimana</button>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          <button className="btn" onClick={loadAll}>🔄 Refresh</button>
 
-  {/* ⬇️ QUESTO È IL NUOVO */}
-  <button className="btn secondary" onClick={exportPdf}>📄 Esporta PDF</button>
-</div>
+          <button className="btn primary" onClick={() => alert("💾 Salvataggio automatico attivo")}>
+            💾 Salva (auto)
+          </button>
+
+          <button className="btn danger" onClick={resetWeek}>♻️ Reset settimana</button>
+
+          <button className="btn secondary" onClick={exportPdf}>📄 Esporta PDF</button>
+        </div>
 
         {err && <div className="card alert">{err}</div>}
 
@@ -274,8 +264,8 @@ export default function Planning() {
                       const isDup = val ? (dupMap?.[di]?.has(val) || false) : false;
 
                       let bg = "transparent";
-                      if (ex) bg = "#fee2e2";        // rosso chiaro
-                      else if (rot) bg = "#fef3c7";  // giallo chiaro
+                      if (ex) bg = "#fee2e2";
+                      else if (rot) bg = "#fef3c7";
 
                       const cellStyle = {
                         background: bg,
@@ -320,7 +310,6 @@ export default function Planning() {
           </div>
         )}
 
-        {/* Lista Anomalie leggibili */}
         <h3 style={{ marginTop: 20 }}>Anomalie (dettaglio)</h3>
         <div className="card">
           <h4>⛔ Assenze bloccanti</h4>
