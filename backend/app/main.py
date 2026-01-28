@@ -1,7 +1,8 @@
 from datetime import date, datetime, timedelta
 from io import BytesIO
+from typing import Optional
 
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
@@ -14,7 +15,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
-from . import models, schemas, auth, seed, crud
+from . import models, schemas, auth, crud
 from .db import make_engine, make_session_local, Base
 
 
@@ -99,12 +100,22 @@ def require_user_from_query(token: str, db: Session) -> models.User:
     return user
 
 
+def get_bearer_from_header(request: Request) -> Optional[str]:
+    authz = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not authz:
+        return None
+    parts = authz.split(" ", 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return None
+
+
 def parse_date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
 # -------------------------
-# AUTH endpoints (Swagger -> Authorize)
+# AUTH endpoints
 # -------------------------
 @app.post("/auth/bootstrap-admin")
 def bootstrap_admin(db: Session = Depends(get_db)):
@@ -275,7 +286,7 @@ def delete_shift(shift_id: str, db: Session = Depends(get_db), _: models.User = 
 
 
 # =========================
-# EXTRA ABSENCES (FERIE/MALATTIA/INFORTUNIO)
+# EXTRA ABSENCES
 # =========================
 @app.post("/absences", response_model=schemas.ExtraAbsenceOut)
 def create_absence(payload: schemas.ExtraAbsenceIn, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
@@ -306,8 +317,8 @@ def create_absence(payload: schemas.ExtraAbsenceIn, db: Session = Depends(get_db
 def list_absences(
     db: Session = Depends(get_db),
     _: models.User = Depends(require_user),
-    date_from: date | None = Query(default=None),
-    date_to: date | None = Query(default=None),
+    date_from: Optional[date] = Query(default=None),
+    date_to: Optional[date] = Query(default=None),
 ):
     q = db.query(models.ExtraAbsence)
     if date_from:
@@ -415,15 +426,20 @@ def get_absences(monday: str, db: Session = Depends(get_db), _: models.User = De
 
 
 # =========================
-# EXPORT PDF (token via query -> no CORS)
+# EXPORT PDF (token in query OR header -> no CORS)
 # =========================
 @app.get("/weeks/{monday}/export.pdf")
 def export_week_pdf(
     monday: str,
-    token: str = Query(...),
+    request: Request,
+    token: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    _user = require_user_from_query(token, db)  # valida token
+    raw = token or get_bearer_from_header(request)
+    if not raw:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    _user = require_user_from_query(raw, db)
 
     monday_date = parse_date(monday)
     week = crud.get_or_create_week(db, monday_date)
@@ -469,14 +485,11 @@ def export_week_pdf(
         ("TEXTCOLOR", (0,0), (-1,0), colors.white),
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
         ("FONTSIZE", (0,0), (-1,0), 10),
-
         ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#cbd5e1")),
         ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
         ("FONTSIZE", (0,1), (-1,-1), 9),
-
         ("BACKGROUND", (0,1), (0,-1), colors.HexColor("#f1f5f9")),
         ("FONTNAME", (0,1), (0,-1), "Helvetica-Bold"),
-
         ("ROWBACKGROUNDS", (1,1), (-1,-1), [colors.white, colors.HexColor("#f8fafc")]),
         ("LEFTPADDING", (0,0), (-1,-1), 6),
         ("RIGHTPADDING", (0,0), (-1,-1), 6),
@@ -492,5 +505,5 @@ def export_week_pdf(
     return StreamingResponse(
         buf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'}
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )

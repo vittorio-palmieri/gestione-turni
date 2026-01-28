@@ -77,7 +77,6 @@ export default function Planning() {
     extra_absence_saltata: {},
   };
 
-  // per-day duplicates set (per evidenziare bordi)
   const dupMap = useMemo(() => {
     const out = {};
     const dups = alerts.duplicates || {};
@@ -88,7 +87,6 @@ export default function Planning() {
     return out;
   }, [alerts]);
 
-  // badge counts
   const notPlannedCount = (d) =>
     (alerts.not_planned?.[d] || alerts.not_planned?.[String(d)] || []).length;
   const duplicatesCount = (d) =>
@@ -133,7 +131,6 @@ export default function Planning() {
     }
   }
 
-  // Anomalie leggibili (per lista sotto)
   const readableAlerts = useMemo(() => {
     const a = alerts || {};
     const out = {
@@ -146,51 +143,31 @@ export default function Planning() {
 
     Object.keys(a.duplicates || {}).forEach((d) => {
       (a.duplicates[d] || []).forEach((it) => {
-        out.duplicates.push({
-          day: Number(d),
-          person: nameOf(it.person_id),
-          count: it.count,
-        });
+        out.duplicates.push({ day: Number(d), person: nameOf(it.person_id), count: it.count });
       });
     });
 
     Object.keys(a.not_planned || {}).forEach((d) => {
       (a.not_planned[d] || []).forEach((pid) => {
-        out.not_planned.push({
-          day: Number(d),
-          person: nameOf(pid),
-        });
+        out.not_planned.push({ day: Number(d), person: nameOf(pid) });
       });
     });
 
     Object.keys(a.riposo_saltato || {}).forEach((d) => {
       (a.riposo_saltato[d] || []).forEach((it) => {
-        out.riposo_saltato.push({
-          day: Number(d),
-          person: nameOf(it.person_id),
-          shift: it.shift_name || "-",
-        });
+        out.riposo_saltato.push({ day: Number(d), person: nameOf(it.person_id), shift: it.shift_name || "-" });
       });
     });
 
     Object.keys(a.permesso_saltato || {}).forEach((d) => {
       (a.permesso_saltato[d] || []).forEach((it) => {
-        out.permesso_saltato.push({
-          day: Number(d),
-          person: nameOf(it.person_id),
-          shift: it.shift_name || "-",
-        });
+        out.permesso_saltato.push({ day: Number(d), person: nameOf(it.person_id), shift: it.shift_name || "-" });
       });
     });
 
     Object.keys(a.extra_absence_saltata || {}).forEach((d) => {
       (a.extra_absence_saltata[d] || []).forEach((it) => {
-        out.extra_absence_saltata.push({
-          day: Number(d),
-          person: nameOf(it.person_id),
-          kind: it.kind,
-          shift: it.shift_name || "-",
-        });
+        out.extra_absence_saltata.push({ day: Number(d), person: nameOf(it.person_id), kind: it.kind, shift: it.shift_name || "-" });
       });
     });
 
@@ -208,13 +185,8 @@ export default function Planning() {
 
         <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
           <button className="btn" onClick={loadAll}>🔄 Refresh</button>
-
-          <button className="btn primary" onClick={() => alert("💾 Salvataggio automatico attivo")}>
-            💾 Salva (auto)
-          </button>
-
+          <button className="btn primary" onClick={() => alert("💾 Salvataggio automatico attivo")}>💾 Salva (auto)</button>
           <button className="btn danger" onClick={resetWeek}>♻️ Reset settimana</button>
-
           <button className="btn secondary" onClick={exportPdf}>📄 Esporta PDF</button>
         </div>
 
@@ -258,9 +230,8 @@ export default function Planning() {
                       const row = plan.grid?.[di] || plan.grid?.[String(di)] || {};
                       const val = row?.[s.id] || "";
 
-                      const ex = val ? extraOf(val, di) : null; // blocco
-                      const rot = val ? rotOf(val, di) : null; // warning
-
+                      const ex = val ? extraOf(val, di) : null;
+                      const rot = val ? rotOf(val, di) : null;
                       const isDup = val ? (dupMap?.[di]?.has(val) || false) : false;
 
                       let bg = "transparent";
@@ -316,20 +287,6 @@ export default function Planning() {
           {readableAlerts.extra_absence_saltata.length === 0 ? "Nessuna" :
             <ul>{readableAlerts.extra_absence_saltata.map((x,i)=>(
               <li key={i}>{days[x.day]}: {x.person} — {x.shift} ({x.kind})</li>
-            ))}</ul>
-          }
-
-          <h4>⚠ Riposo saltato</h4>
-          {readableAlerts.riposo_saltato.length === 0 ? "Nessuno" :
-            <ul>{readableAlerts.riposo_saltato.map((x,i)=>(
-              <li key={i}>{days[x.day]}: {x.person} — {x.shift}</li>
-            ))}</ul>
-          }
-
-          <h4>⚠ Permesso saltato</h4>
-          {readableAlerts.permesso_saltato.length === 0 ? "Nessuno" :
-            <ul>{readableAlerts.permesso_saltato.map((x,i)=>(
-              <li key={i}>{days[x.day]}: {x.person} — {x.shift}</li>
             ))}</ul>
           }
 
