@@ -114,9 +114,9 @@ def parse_date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
-# -------------------------
+# =========================
 # AUTH endpoints
-# -------------------------
+# =========================
 @app.post("/auth/bootstrap-admin")
 def bootstrap_admin(db: Session = Depends(get_db)):
     if settings.ENV != "dev":
@@ -426,7 +426,61 @@ def get_absences(monday: str, db: Session = Depends(get_db), _: models.User = De
 
 
 # =========================
-# EXPORT PDF (token in query OR header -> no CORS)
+# META (override orari + ruolo)
+# =========================
+@app.get("/weeks/{monday}/meta")
+def get_week_meta(monday: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
+    monday_date = parse_date(monday)
+    week = crud.get_or_create_week(db, monday_date)
+
+    rows = db.query(models.AssignmentMeta).filter(models.AssignmentMeta.week_id == week.id).all()
+    out = {d: {} for d in range(7)}
+
+    for r in rows:
+        out[r.day_index][r.shift_id] = {
+            "override_start_time": r.override_start_time.isoformat() if r.override_start_time else None,
+            "override_end_time": r.override_end_time.isoformat() if r.override_end_time else None,
+            "role": r.role,
+        }
+
+    return {"monday_date": str(monday_date), "meta": out}
+
+
+@app.put("/weeks/{monday}/meta")
+def put_week_meta(monday: str, payload: schemas.CellMetaUpdateIn, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
+    if not (0 <= payload.day_index <= 6):
+        raise HTTPException(status_code=400, detail="day_index deve essere 0..6")
+
+    if payload.role not in (None, "", "APERTURA", "CHIUSURA"):
+        raise HTTPException(status_code=400, detail="role deve essere APERTURA/CHIUSURA o null")
+
+    monday_date = parse_date(monday)
+    week = crud.get_or_create_week(db, monday_date)
+
+    meta = db.query(models.AssignmentMeta).filter(
+        models.AssignmentMeta.week_id == week.id,
+        models.AssignmentMeta.day_index == payload.day_index,
+        models.AssignmentMeta.shift_id == payload.shift_id,
+    ).one_or_none()
+
+    if meta is None:
+        meta = models.AssignmentMeta(
+            week_id=week.id,
+            day_index=payload.day_index,
+            shift_id=payload.shift_id,
+        )
+        db.add(meta)
+
+    meta.override_start_time = payload.override_start_time
+    meta.override_end_time = payload.override_end_time
+    meta.role = payload.role or None
+
+    db.commit()
+    return {"status": "ok"}
+
+
+# =========================
+# EXPORT PDF (token query/header, include role + times)
 # =========================
 @app.get("/weeks/{monday}/export.pdf")
 def export_week_pdf(
@@ -438,12 +492,27 @@ def export_week_pdf(
     raw = token or get_bearer_from_header(request)
     if not raw:
         raise HTTPException(status_code=401, detail="Not authenticated")
-
     _user = require_user_from_query(raw, db)
 
     monday_date = parse_date(monday)
     week = crud.get_or_create_week(db, monday_date)
     shifts, people_active, grid, _alerts = crud.build_grid_and_alerts(db, week)
+
+    # meta
+    meta_rows = db.query(models.AssignmentMeta).filter(models.AssignmentMeta.week_id == week.id).all()
+    meta_map = {(m.day_index, m.shift_id): m for m in meta_rows}
+    shift_by_id = {s.id: s for s in shifts}
+
+    def fmt_hhmm(t):
+        return t.strftime("%H:%M") if t else ""
+
+    def effective_times(day_idx, shift_id):
+        m = meta_map.get((day_idx, shift_id))
+        sh = shift_by_id.get(shift_id)
+        start = m.override_start_time if (m and m.override_start_time) else (sh.start_time if sh else None)
+        end = m.override_end_time if (m and m.override_end_time) else (sh.end_time if sh else None)
+        role = m.role if m else None
+        return start, end, role
 
     people_by_id = {p.id: p.full_name for p in people_active}
 
@@ -455,10 +524,20 @@ def export_week_pdf(
 
     data = [headers]
     for s in shifts:
-        row = [s.name]
+        row = [f"{s.name} ({fmt_hhmm(s.start_time)}–{fmt_hhmm(s.end_time)})" if (s.start_time or s.end_time) else s.name]
         for d in range(7):
             pid = grid.get(d, {}).get(s.id)
-            row.append(people_by_id.get(pid, "") if pid else "")
+            if not pid:
+                row.append("")
+                continue
+
+            start, end, role = effective_times(d, s.id)
+            role_tag = " (A)" if role == "APERTURA" else (" (C)" if role == "CHIUSURA" else "")
+            times = ""
+            if start or end:
+                times = f" {fmt_hhmm(start)}–{fmt_hhmm(end)}"
+
+            row.append(f"{people_by_id.get(pid, '')}{role_tag}{times}")
         data.append(row)
 
     buf = BytesIO()
@@ -481,20 +560,23 @@ def export_week_pdf(
 
     table = Table(data, repeatRows=1)
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1f2937")),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("FONTSIZE", (0,0), (-1,0), 10),
-        ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#cbd5e1")),
-        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-        ("FONTSIZE", (0,1), (-1,-1), 9),
-        ("BACKGROUND", (0,1), (0,-1), colors.HexColor("#f1f5f9")),
-        ("FONTNAME", (0,1), (0,-1), "Helvetica-Bold"),
-        ("ROWBACKGROUNDS", (1,1), (-1,-1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("LEFTPADDING", (0,0), (-1,-1), 6),
-        ("RIGHTPADDING", (0,0), (-1,-1), 6),
-        ("TOPPADDING", (0,0), (-1,-1), 6),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 10),
+
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTSIZE", (0, 1), (-1, -1), 9),
+
+        ("BACKGROUND", (0, 1), (0, -1), colors.HexColor("#f1f5f9")),
+        ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+
+        ("ROWBACKGROUNDS", (1, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
 
     story.append(table)

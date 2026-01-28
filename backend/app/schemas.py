@@ -18,9 +18,11 @@ class LoginIn(BaseModel):
     email: str
     password: str
 
+
 class ChangePasswordIn(BaseModel):
     current_password: str
     new_password: str
+
 
 # -------------------------
 # PEOPLE
@@ -43,12 +45,11 @@ class PersonOut(BaseModel):
     full_name: str
     is_active: bool
     notes: Optional[str] = None
-
     rotation_base_riposo_date: Optional[date] = None
 
 
 class RotationIn(BaseModel):
-    base_riposo_date: date  # es: 2026-01-18
+    base_riposo_date: date
 
 
 # -------------------------
@@ -84,7 +85,7 @@ class ShiftUpdate(BaseModel):
 # -------------------------
 class ExtraAbsenceIn(BaseModel):
     person_id: str
-    kind: str            # "FERIE" | "MALATTIA" | "INFORTUNIO"
+    kind: str
     start_date: date
     end_date: date
     notes: Optional[str] = None
@@ -116,10 +117,14 @@ class PlanOut(BaseModel):
     people: List[PersonOut]
     grid: Dict[int, Dict[str, Optional[str]]]
     alerts: Dict
-   
-   
 
 
-class ChangePasswordIn(BaseModel):
-    current_password: str
-    new_password: str
+# -------------------------
+# META CELLA (orari override + apertura/chiusura)
+# -------------------------
+class CellMetaUpdateIn(BaseModel):
+    day_index: int
+    shift_id: str
+    override_start_time: Optional[time] = None
+    override_end_time: Optional[time] = None
+    role: Optional[str] = None  # "APERTURA" | "CHIUSURA" | None

@@ -22,14 +22,32 @@ const addDays = (d, n) => {
 
 const days = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
 
+function hhmm(t) {
+  if (!t) return "";
+  // "09:00:00" -> "09:00"
+  return t.length >= 5 ? t.slice(0, 5) : t;
+}
+function toTimeStr(v) {
+  if (!v) return null;
+  // "09:00" -> "09:00:00"
+  return v.length === 5 ? `${v}:00` : v;
+}
+
 export default function Planning() {
   const [monday, setMonday] = useState(mondayOf());
   const mondayISO = useMemo(() => iso(monday), [monday]);
 
   const [plan, setPlan] = useState(null);
   const [abs, setAbs] = useState(null);
+  const [meta, setMeta] = useState(null); // { meta: {dayIndex: {shiftId: {override_start_time, override_end_time, role}}}}
   const [err, setErr] = useState(null);
   const [saving, setSaving] = useState(null);
+
+  // pannello dettagli aperto: "day|shift"
+  const [openKey, setOpenKey] = useState(null);
+
+  // stato edit dettagli per cella (solo mentre pannello aperto)
+  const [metaDraft, setMetaDraft] = useState({}); // key -> { role, start, end }
 
   async function loadAll() {
     try {
@@ -38,6 +56,15 @@ export default function Planning() {
       const a = await apiFetch(`/weeks/${mondayISO}/absences`);
       setPlan(p || {});
       setAbs(a || {});
+
+      // meta (se endpoint non esiste ancora, non rompiamo tutto)
+      try {
+        const m = await apiFetch(`/weeks/${mondayISO}/meta`);
+        setMeta(m || {});
+      } catch (e) {
+        // se non hai ancora messo il backend meta, vedrai qui l’errore
+        setMeta({ meta: {} });
+      }
     } catch (e) {
       setErr(e.message);
     }
@@ -45,6 +72,9 @@ export default function Planning() {
 
   useEffect(() => {
     loadAll();
+    // chiudi pannelli quando cambi settimana
+    setOpenKey(null);
+    setMetaDraft({});
   }, [mondayISO]);
 
   // id -> nome
@@ -92,6 +122,21 @@ export default function Planning() {
   const duplicatesCount = (d) =>
     (alerts.duplicates?.[d] || alerts.duplicates?.[String(d)] || []).length;
 
+  // meta getter
+  function getMeta(dayIndex, shiftId) {
+    const dayObj = meta?.meta?.[dayIndex] || meta?.meta?.[String(dayIndex)] || {};
+    return dayObj?.[shiftId] || null;
+  }
+
+  // tempo effettivo (override > default turno)
+  function effectiveTime(dayIndex, shiftObj) {
+    const m = getMeta(dayIndex, shiftObj.id);
+    const st = hhmm(m?.override_start_time) || hhmm(shiftObj.start_time);
+    const en = hhmm(m?.override_end_time) || hhmm(shiftObj.end_time);
+    const role = m?.role || "";
+    return { st, en, role };
+  }
+
   async function setCell(day, shift, person) {
     const block = person ? extraOf(person, day) : null;
     if (block) {
@@ -131,6 +176,50 @@ export default function Planning() {
     }
   }
 
+  function openDetails(dayIndex, shiftObj) {
+    const key = `${dayIndex}|${shiftObj.id}`;
+    const m = getMeta(dayIndex, shiftObj.id);
+    const draft = {
+      role: m?.role || "",
+      start: hhmm(m?.override_start_time) || "",
+      end: hhmm(m?.override_end_time) || "",
+    };
+    setMetaDraft((prev) => ({ ...prev, [key]: draft }));
+    setOpenKey((prev) => (prev === key ? null : key));
+  }
+
+  async function saveDetails(dayIndex, shiftObj) {
+    const key = `${dayIndex}|${shiftObj.id}`;
+    const d = metaDraft[key] || { role: "", start: "", end: "" };
+
+    try {
+      setSaving(`meta-${key}`);
+      await apiFetch(`/weeks/${mondayISO}/meta`, {
+        method: "PUT",
+        body: {
+          day_index: dayIndex,
+          shift_id: shiftObj.id,
+          override_start_time: toTimeStr(d.start),
+          override_end_time: toTimeStr(d.end),
+          role: d.role || null,
+        },
+      });
+      await loadAll();
+      setOpenKey(null);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  function roleLabel(role) {
+    if (role === "APERTURA") return "Apertura";
+    if (role === "CHIUSURA") return "Chiusura";
+    return "—";
+  }
+
+  // Anomalie leggibili (per lista sotto) – le lasciamo come prima
   const readableAlerts = useMemo(() => {
     const a = alerts || {};
     const out = {
@@ -199,13 +288,12 @@ export default function Planning() {
             <table className="grid">
               <thead>
                 <tr>
-                  <th style={{ minWidth: 120 }}>Turno</th>
+                  <th style={{ minWidth: 160 }}>Turno</th>
                   {days.map((d, i) => {
-                    const di = i;
-                    const np = notPlannedCount(di);
-                    const du = duplicatesCount(di);
+                    const np = notPlannedCount(i);
+                    const du = duplicatesCount(i);
                     return (
-                      <th key={d} style={{ minWidth: 190 }}>
+                      <th key={d} style={{ minWidth: 260 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
                           <div>
                             {d} <span className="badge">{iso(addDays(monday, i)).slice(5)}</span>
@@ -224,7 +312,10 @@ export default function Planning() {
               <tbody>
                 {plan.shifts.map((s) => (
                   <tr key={s.id}>
-                    <td style={{ fontWeight: 800 }}>{s.name}</td>
+                    <td style={{ fontWeight: 800 }}>
+                      {s.name}
+                      <div className="small">{hhmm(s.start_time)}–{hhmm(s.end_time)}</div>
+                    </td>
 
                     {days.map((_, di) => {
                       const row = plan.grid?.[di] || plan.grid?.[String(di)] || {};
@@ -234,9 +325,11 @@ export default function Planning() {
                       const rot = val ? rotOf(val, di) : null;
                       const isDup = val ? (dupMap?.[di]?.has(val) || false) : false;
 
+                      const { st, en, role } = effectiveTime(di, s);
+
                       let bg = "transparent";
-                      if (ex) bg = "#fee2e2";
-                      else if (rot) bg = "#fef3c7";
+                      if (ex) bg = "#fee2e2";        // rosso chiaro (bloccante)
+                      else if (rot) bg = "#fef3c7";  // giallo chiaro (warning)
 
                       const cellStyle = {
                         background: bg,
@@ -244,6 +337,9 @@ export default function Planning() {
                         borderRadius: 10,
                         padding: 8,
                       };
+
+                      const key = `${di}|${s.id}`;
+                      const draft = metaDraft[key] || { role: "", start: "", end: "" };
 
                       return (
                         <td key={di}>
@@ -266,6 +362,78 @@ export default function Planning() {
                                 );
                               })}
                             </select>
+
+                            <div className="small" style={{ marginTop: 6 }}>
+                              {roleLabel(role)} • {st || "—"}–{en || "—"}
+                            </div>
+
+                            <button
+                              className="btn secondary"
+                              style={{ marginTop: 6, width: "100%" }}
+                              onClick={() => openDetails(di, s)}
+                            >
+                              Dettagli orario / Apertura-Chiusura
+                            </button>
+
+                            {openKey === key && (
+                              <div style={{ marginTop: 8 }}>
+                                <div className="small">Ruolo</div>
+                                <select
+                                  value={draft.role}
+                                  onChange={(e) =>
+                                    setMetaDraft((prev) => ({
+                                      ...prev,
+                                      [key]: { ...draft, role: e.target.value },
+                                    }))
+                                  }
+                                >
+                                  <option value="">—</option>
+                                  <option value="APERTURA">APERTURA</option>
+                                  <option value="CHIUSURA">CHIUSURA</option>
+                                </select>
+
+                                <div style={{ height: 8 }} />
+
+                                <div className="small">Inizio (override)</div>
+                                <input
+                                  className="input"
+                                  type="time"
+                                  value={draft.start}
+                                  onChange={(e) =>
+                                    setMetaDraft((prev) => ({
+                                      ...prev,
+                                      [key]: { ...draft, start: e.target.value },
+                                    }))
+                                  }
+                                />
+
+                                <div style={{ height: 8 }} />
+
+                                <div className="small">Fine (override)</div>
+                                <input
+                                  className="input"
+                                  type="time"
+                                  value={draft.end}
+                                  onChange={(e) =>
+                                    setMetaDraft((prev) => ({
+                                      ...prev,
+                                      [key]: { ...draft, end: e.target.value },
+                                    }))
+                                  }
+                                />
+
+                                <div style={{ height: 10 }} />
+
+                                <button
+                                  className="btn primary"
+                                  style={{ width: "100%" }}
+                                  disabled={saving === `meta-${key}`}
+                                  onClick={() => saveDetails(di, s)}
+                                >
+                                  {saving === `meta-${key}` ? "Salvo..." : "Salva dettagli"}
+                                </button>
+                              </div>
+                            )}
 
                             {ex && <div className="small" style={{ marginTop: 6 }}>⛔ {ex}</div>}
                             {!ex && rot && <div className="small" style={{ marginTop: 6 }}>⚠ {rot}</div>}
