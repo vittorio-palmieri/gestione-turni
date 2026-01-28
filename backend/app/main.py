@@ -398,3 +398,88 @@ def get_absences(monday: str, db: Session = Depends(get_db), _: models.User = De
                 extra[d][r.person_id] = r.kind
 
     return {"monday_date": str(monday_date), "riposi": riposi, "permessi": permessi, "extra": extra}
+    from io import BytesIO
+from fastapi.responses import StreamingResponse
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+
+@app.get("/weeks/{monday}/export.pdf")
+def export_week_pdf(monday: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
+    monday_date = parse_date(monday)
+
+    # prendo planning
+    week = crud.get_or_create_week(db, monday_date)
+    shifts, people_active, grid, alerts = crud.build_grid_and_alerts(db, week)
+
+    # mappa id->nome
+    people_by_id = {p.id: p.full_name for p in people_active}
+
+    # prepara intestazioni (Lun..Dom + date)
+    day_names = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
+    headers = ["Turno"] + [
+        f"{day_names[i]} { (monday_date + timedelta(days=i)).strftime('%d/%m') }"
+        for i in range(7)
+    ]
+
+    # tabella: una riga per turno
+    data = [headers]
+    for s in shifts:
+        row = [s.name]
+        for d in range(7):
+            pid = None
+            if d in grid and s.id in grid[d]:
+                pid = grid[d][s.id]
+            name = people_by_id.get(pid, "") if pid else ""
+            row.append(name)
+        data.append(row)
+
+    # PDF in memoria
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(A4),
+        leftMargin=18,
+        rightMargin=18,
+        topMargin=18,
+        bottomMargin=18,
+        title="Pianificazione Turni",
+    )
+
+    styles = getSampleStyleSheet()
+    title = f"Pianificazione Settimana: {monday_date.strftime('%d/%m/%Y')} → {(monday_date + timedelta(days=6)).strftime('%d/%m/%Y')}"
+    story = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
+
+    table = Table(data, repeatRows=1)
+
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1f2937")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("FONTSIZE", (0,0), (-1,0), 10),
+
+        ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#cbd5e1")),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        ("FONTSIZE", (0,1), (-1,-1), 9),
+
+        ("BACKGROUND", (0,1), (0,-1), colors.HexColor("#f1f5f9")),
+        ("FONTNAME", (0,1), (0,-1), "Helvetica-Bold"),
+
+        ("ROWBACKGROUNDS", (1,1), (-1,-1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("LEFTPADDING", (0,0), (-1,-1), 6),
+        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING", (0,0), (-1,-1), 6),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+    ]))
+
+    story.append(table)
+    doc.build(story)
+
+    buf.seek(0)
+    filename = f"turni_{monday_date.strftime('%Y-%m-%d')}.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
