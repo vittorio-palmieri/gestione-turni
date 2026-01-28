@@ -18,6 +18,9 @@ class LoginIn(BaseModel):
     email: str
     password: str
 
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
 
 # -------------------------
 # PEOPLE
@@ -113,3 +116,7 @@ class PlanOut(BaseModel):
     people: List[PersonOut]
     grid: Dict[int, Dict[str, Optional[str]]]
     alerts: Dict
+    from pydantic import BaseModel
+    class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
