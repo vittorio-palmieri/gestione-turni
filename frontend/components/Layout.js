@@ -14,6 +14,7 @@ export default function Layout({ children }) {
     { href: "/assenze", label: "Assenze" },
     { href: "/people", label: "Persone" },
     { href: "/shifts", label: "Turni" },
+    { href: "/password", label: "Password" },
   ];
 
   useEffect(() => {
