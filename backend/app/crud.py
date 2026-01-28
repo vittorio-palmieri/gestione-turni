@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, timedelta, time
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from . import models
@@ -17,7 +17,17 @@ def get_or_create_week(db: Session, monday: date) -> models.Week:
     return week
 
 
-def set_cell(db: Session, week: models.Week, day_index: int, shift_id: str, person_id: str | None):
+def set_cell(
+    db: Session,
+    week: models.Week,
+    day_index: int,
+    shift_id: str,
+    person_id: str | None,
+    override_start_time: time | None = None,
+    override_end_time: time | None = None,
+    role: str | None = None,
+):
+    # assignment (persona)
     cell = db.query(models.Assignment).filter(
         and_(
             models.Assignment.week_id == week.id,
@@ -36,16 +46,41 @@ def set_cell(db: Session, week: models.Week, day_index: int, shift_id: str, pers
     else:
         cell.person_id = person_id
 
+    # meta (orari override + ruolo)
+    # Salviamo meta solo se almeno uno è valorizzato, altrimenti lasciamo tutto com'è.
+    if override_start_time is not None or override_end_time is not None or role is not None:
+        meta = db.query(models.AssignmentMeta).filter(
+            and_(
+                models.AssignmentMeta.week_id == week.id,
+                models.AssignmentMeta.day_index == day_index,
+                models.AssignmentMeta.shift_id == shift_id
+            )
+        ).one_or_none()
+
+        if meta is None:
+            meta = models.AssignmentMeta(
+                week_id=week.id,
+                day_index=day_index,
+                shift_id=shift_id
+            )
+            db.add(meta)
+
+        meta.override_start_time = override_start_time
+        meta.override_end_time = override_end_time
+        meta.role = role
+
     db.commit()
 
 
 def clear_week(db: Session, week: models.Week):
     db.query(models.Assignment).filter(models.Assignment.week_id == week.id).delete()
+    db.query(models.AssignmentMeta).filter(models.AssignmentMeta.week_id == week.id).delete()
     db.commit()
 
 
 def copy_week(db: Session, src_week: models.Week, dst_week: models.Week):
     clear_week(db, dst_week)
+
     src_cells = db.query(models.Assignment).filter(models.Assignment.week_id == src_week.id).all()
     for c in src_cells:
         db.add(models.Assignment(
@@ -54,6 +89,18 @@ def copy_week(db: Session, src_week: models.Week, dst_week: models.Week):
             shift_id=c.shift_id,
             person_id=c.person_id
         ))
+
+    src_meta = db.query(models.AssignmentMeta).filter(models.AssignmentMeta.week_id == src_week.id).all()
+    for m in src_meta:
+        db.add(models.AssignmentMeta(
+            week_id=dst_week.id,
+            day_index=m.day_index,
+            shift_id=m.shift_id,
+            override_start_time=m.override_start_time,
+            override_end_time=m.override_end_time,
+            role=m.role,
+        ))
+
     db.commit()
 
 
@@ -88,12 +135,12 @@ def build_grid_and_alerts(db: Session, week: models.Week):
     not_planned: dict[int, list[str]] = {d: [] for d in range(7)}
     riposo_saltato: dict[int, list] = {d: [] for d in range(7)}
     permesso_saltato: dict[int, list] = {d: [] for d in range(7)}
-    extra_absence_saltata: dict[int, list] = {d: [] for d in range(7)}  # FERIE/MALATTIA/INFORTUNIO pianificata
+    extra_absence_saltata: dict[int, list] = {d: [] for d in range(7)}
 
     active_ids = [p.id for p in people_active]
     shift_name_by_id = {s.id: s.name for s in shifts}
 
-    # extra absences nella settimana (boccanti)
+    # extra absences nella settimana (bloccanti)
     week_start = monday_date
     week_end = monday_date + timedelta(days=6)
     extra_rows = db.query(models.ExtraAbsence).filter(
@@ -101,7 +148,7 @@ def build_grid_and_alerts(db: Session, week: models.Week):
         models.ExtraAbsence.end_date >= week_start
     ).all()
 
-    extra_by_day: dict[int, dict[str, str]] = {d: {} for d in range(7)}  # day -> {person_id: kind}
+    extra_by_day: dict[int, dict[str, str]] = {d: {} for d in range(7)}
     for r in extra_rows:
         for d in range(7):
             day_date = monday_date + timedelta(days=d)
@@ -127,12 +174,11 @@ def build_grid_and_alerts(db: Session, week: models.Week):
             if cnt >= 2:
                 duplicates[d].append({"person_id": pid, "count": cnt})
 
-        # Riposo/permesso/extra saltati (pianificato durante assenza)
+        # Riposo/permesso/extra saltati
         for shift_id, pid in grid[d].items():
             if not pid:
                 continue
 
-            # extra blocca (ferie/malattia/infortunio)
             extra_kind = extra_by_day[d].get(pid)
             if extra_kind:
                 extra_absence_saltata[d].append({
@@ -143,7 +189,6 @@ def build_grid_and_alerts(db: Session, week: models.Week):
                 })
                 continue
 
-            # riposo/permesso (warning)
             rot_kind = rot_by_day[d].get(pid)
             if rot_kind == "RIPOSO":
                 riposo_saltato[d].append({
@@ -158,7 +203,7 @@ def build_grid_and_alerts(db: Session, week: models.Week):
                     "shift_name": shift_name_by_id.get(shift_id, "")
                 })
 
-        # Non pianificati: escludi chi è assente (rotazione o extra)
+        # Non pianificati (escludi assenti)
         assigned_set = set(assigned)
         not_planned[d] = [
             pid for pid in active_ids

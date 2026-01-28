@@ -33,25 +33,8 @@ class Person(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    # ROTAZIONE 8 GIORNI: base = data di RIPOSO (giorno 0 del ciclo)
+    # Rotazione 8 giorni: base = data di RIPOSO
     rotation_base_riposo_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-
-
-class ExtraAbsence(Base):
-    """
-    Assenze che BLOCCANO la pianificazione: FERIE / MALATTIA / INFORTUNIO
-    """
-    __tablename__ = "extra_absences"
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
-
-    person_id: Mapped[str] = mapped_column(String, ForeignKey("people.id", ondelete="CASCADE"))
-    kind: Mapped[str] = mapped_column(String)  # "FERIE" | "MALATTIA" | "INFORTUNIO"
-    start_date: Mapped[date] = mapped_column(Date)
-    end_date: Mapped[date] = mapped_column(Date)
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-    person = relationship("Person")
 
 
 class Shift(Base):
@@ -85,4 +68,45 @@ class Assignment(Base):
 
     week = relationship("Week")
     shift = relationship("Shift")
+    person = relationship("Person")
+
+
+class AssignmentMeta(Base):
+    """
+    Metadati della cella (week + day + shift) per:
+    - orari override (inizio/fine variabili per quel giorno)
+    - ruolo (APERTURA / CHIUSURA)
+    """
+    __tablename__ = "assignment_meta"
+    __table_args__ = (UniqueConstraint("week_id", "day_index", "shift_id", name="uq_assignment_meta_cell"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    week_id: Mapped[str] = mapped_column(String, ForeignKey("weeks.id", ondelete="CASCADE"))
+    day_index: Mapped[int] = mapped_column(Integer)  # 0..6
+    shift_id: Mapped[str] = mapped_column(String, ForeignKey("shifts.id", ondelete="CASCADE"))
+
+    override_start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    override_end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+
+    # "APERTURA" | "CHIUSURA" | None
+    role: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    week = relationship("Week")
+    shift = relationship("Shift")
+
+
+class ExtraAbsence(Base):
+    """
+    Assenze BLOCCANTI: FERIE / MALATTIA / INFORTUNIO
+    """
+    __tablename__ = "extra_absences"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+
+    person_id: Mapped[str] = mapped_column(String, ForeignKey("people.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String)  # FERIE | MALATTIA | INFORTUNIO
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date] = mapped_column(Date)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
     person = relationship("Person")
