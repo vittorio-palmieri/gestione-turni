@@ -400,25 +400,32 @@ def copy_from(monday: str, prev_monday: str, db: Session = Depends(get_db), _: m
 def get_absences(monday: str, db: Session = Depends(get_db), _: models.User = Depends(require_user)):
     monday_date = parse_date(monday)
 
+    # strutture SEMPRE COMPLETE
     riposi = {d: [] for d in range(7)}
     permessi = {d: [] for d in range(7)}
-    extra = {d: {} for d in range(7)}
+    extra = {d: {} for d in range(7)}  # day -> {person_id: kind}
 
+    # 1) riposi/permessi da rotazione (8 giorni)
     people = db.query(models.Person).filter(models.Person.is_active == True).all()
     for p in people:
-        if not p.rotation_base_riposo_date:
+        base = p.rotation_base_riposo_date
+        if not base:
             continue
+
         for d in range(7):
             day_date = monday_date + timedelta(days=d)
-            diff = (day_date - p.rotation_base_riposo_date).days
+            diff = (day_date - base).days
             mod = diff % 8
+
             if mod == 0:
                 riposi[d].append(p.id)
             elif mod == 1:
                 permessi[d].append(p.id)
 
+    # 2) extra assenze (FERIE/MALATTIA/INFORTUNIO)
     week_start = monday_date
     week_end = monday_date + timedelta(days=6)
+
     rows = db.query(models.ExtraAbsence).filter(
         models.ExtraAbsence.start_date <= week_end,
         models.ExtraAbsence.end_date >= week_start
@@ -430,7 +437,12 @@ def get_absences(monday: str, db: Session = Depends(get_db), _: models.User = De
             if r.start_date <= day_date <= r.end_date:
                 extra[d][r.person_id] = r.kind
 
-    return {"monday_date": str(monday_date), "riposi": riposi, "permessi": permessi, "extra": extra}
+    return {
+        "monday_date": str(monday_date),
+        "riposi": riposi,
+        "permessi": permessi,
+        "extra": extra,
+    }
 
 
 # =========================
