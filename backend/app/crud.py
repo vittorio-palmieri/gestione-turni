@@ -20,12 +20,30 @@ def get_or_create_week(db: Session, monday: date) -> models.Week:
 
 def set_cell(db: Session, week: models.Week, day_index: int, shift_id: str, person_id: str | None):
     cell = db.query(models.Assignment).filter(
-        and_(
-            models.Assignment.week_id == week.id,
-            models.Assignment.day_index == day_index,
-            models.Assignment.shift_id == shift_id
-        )
+        models.Assignment.week_id == week.id,
+        models.Assignment.day_index == day_index,
+        models.Assignment.shift_id == shift_id
     ).one_or_none()
+
+    # se person_id è None → cancella la cella
+    if person_id is None:
+        if cell:
+            db.delete(cell)
+            db.commit()
+        return
+
+    # altrimenti inserisci / aggiorna
+    if cell is None:
+        db.add(models.Assignment(
+            week_id=week.id,
+            day_index=day_index,
+            shift_id=shift_id,
+            person_id=person_id
+        ))
+    else:
+        cell.person_id = person_id
+
+    db.commit()
 
     # ✅ Se svuoti la cella (person_id None) => cancella la riga
     if person_id is None:
