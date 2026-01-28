@@ -168,3 +168,15 @@ tr:hover td {
 body {
   background: red !important;
 }
+/* === TEST THEME COLORS === */
+body {
+  background-color: #0f172a !important; /* blu scuro */
+  color: #e5e7eb !important;            /* grigio chiaro */
+}
+
+button,
+.btn {
+  background-color: #22c55e !important; /* verde */
+  color: #022c22 !important;
+  border-radius: 10px;
+}
