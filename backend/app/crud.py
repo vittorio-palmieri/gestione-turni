@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
-
 from . import models
+
+
+def _utcnow():
+    # timestamp sicuro per DB (naive ok con Postgres)
+    return datetime.utcnow()
 
 
 def get_or_create_week(db: Session, monday: date) -> models.Week:
@@ -12,6 +16,9 @@ def get_or_create_week(db: Session, monday: date) -> models.Week:
     if week:
         return week
     week = models.Week(monday_date=monday)
+    # se il DB ha created_at NOT NULL senza default, valorizziamo se esiste
+    if hasattr(week, "created_at") and getattr(week, "created_at", None) is None:
+        week.created_at = _utcnow()
     db.add(week)
     db.commit()
     db.refresh(week)
@@ -19,83 +26,64 @@ def get_or_create_week(db: Session, monday: date) -> models.Week:
 
 
 def set_cell(db: Session, week: models.Week, day_index: int, shift_id: str, person_id: str | None):
+    """
+    Crea o aggiorna una cella (week_id + day_index + shift_id).
+    FIX: valorizza sempre created_at / updated_at se il DB li richiede NOT NULL.
+    """
     cell = db.query(models.Assignment).filter(
-        models.Assignment.week_id == week.id,
-        models.Assignment.day_index == day_index,
-        models.Assignment.shift_id == shift_id
+        and_(
+            models.Assignment.week_id == week.id,
+            models.Assignment.day_index == day_index,
+            models.Assignment.shift_id == shift_id
+        )
     ).one_or_none()
 
-    # se person_id è None → cancella la cella
-    if person_id is None:
-        if cell:
-            db.delete(cell)
-            db.commit()
-        return
+    now = _utcnow()
 
-    # altrimenti inserisci / aggiorna
     if cell is None:
-        db.add(models.Assignment(
+        cell = models.Assignment(
             week_id=week.id,
             day_index=day_index,
             shift_id=shift_id,
             person_id=person_id
-        ))
+        )
+
+        # ✅ Se nel DB esistono colonne NOT NULL senza default, impostale
+        if hasattr(cell, "created_at") and getattr(cell, "created_at", None) is None:
+            cell.created_at = now
+        if hasattr(cell, "updated_at"):
+            cell.updated_at = now
+
+        db.add(cell)
     else:
         cell.person_id = person_id
-
-    db.commit()
-
-    # ✅ Se svuoti la cella (person_id None) => cancella la riga
-    if person_id is None:
-        if cell is not None:
-            db.delete(cell)
-            db.commit()
-        return
-
-    # ✅ Se assegni una persona
-    if cell is None:
-        db.add(models.Assignment(
-            week_id=week.id,
-            day_index=day_index,
-            shift_id=shift_id,
-            person_id=person_id
-        ))
-    else:
-        cell.person_id = person_id
+        if hasattr(cell, "updated_at"):
+            cell.updated_at = now
 
     db.commit()
 
 
 def clear_week(db: Session, week: models.Week):
     db.query(models.Assignment).filter(models.Assignment.week_id == week.id).delete()
-    db.query(models.AssignmentMeta).filter(models.AssignmentMeta.week_id == week.id).delete()
     db.commit()
 
 
 def copy_week(db: Session, src_week: models.Week, dst_week: models.Week):
     clear_week(db, dst_week)
-
     src_cells = db.query(models.Assignment).filter(models.Assignment.week_id == src_week.id).all()
+    now = _utcnow()
     for c in src_cells:
-        db.add(models.Assignment(
+        row = models.Assignment(
             week_id=dst_week.id,
             day_index=c.day_index,
             shift_id=c.shift_id,
             person_id=c.person_id
-        ))
-
-    # Copia anche i metadati (orari override + apertura/chiusura)
-    src_meta = db.query(models.AssignmentMeta).filter(models.AssignmentMeta.week_id == src_week.id).all()
-    for m in src_meta:
-        db.add(models.AssignmentMeta(
-            week_id=dst_week.id,
-            day_index=m.day_index,
-            shift_id=m.shift_id,
-            override_start_time=m.override_start_time,
-            override_end_time=m.override_end_time,
-            role=m.role,
-        ))
-
+        )
+        if hasattr(row, "created_at") and getattr(row, "created_at", None) is None:
+            row.created_at = now
+        if hasattr(row, "updated_at"):
+            row.updated_at = now
+        db.add(row)
     db.commit()
 
 
